@@ -11,7 +11,14 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import com.google.android.material.button.MaterialButton
 import okhttp3.*
-import org.json.JSONObject
+import okio.ByteString
+import okio.ByteString.Companion.toByteString
+import java.net.DatagramPacket
+import java.net.DatagramSocket
+import java.net.InetAddress
+import java.net.NetworkInterface
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.util.concurrent.TimeUnit
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import android.os.Handler
@@ -20,7 +27,7 @@ import android.os.Looper
 /**
  * MainActivity adalah pusat kontrol utama untuk aplikasi Viper Bot Sprayer.
  * Kelas ini menangani antarmuka pengguna (UI), auto-discovery perangkat robot via UDP,
- * serta komunikasi dua arah secara real-time via WebSockets.
+ * serta komunikasi dua arah secara real-time via WebSockets (Raw Byte Protocol).
  */
 class MainActivity : AppCompatActivity() {
 
@@ -36,6 +43,8 @@ class MainActivity : AppCompatActivity() {
 
     private var webSocket: WebSocket? = null
     private var isSpraying = false
+    private var driveState = 0
+    private var steerState = 0
 
     override fun onCreate(savedInstanceState: Bundle?) {
         val splashScreen = installSplashScreen()
@@ -65,9 +74,6 @@ class MainActivity : AppCompatActivity() {
         discoverRobot()
     }
 
-    /**
-     * Menghubungkan variabel-variabel Kotlin dengan elemen UI (View) yang ada di XML.
-     */
     private fun initViews() {
         tvSpeed = findViewById(R.id.tvSpeed)
         tvPumpStatus = findViewById(R.id.tvPumpStatus)
@@ -80,20 +86,12 @@ class MainActivity : AppCompatActivity() {
         btnKanan = findViewById(R.id.btnKanan)
     }
 
-    /**
-     * Menginisiasi pendengar (listener) untuk semua interaksi tombol pengguna.
-     * Mengimplementasikan logika tekan-tahan (hold-to-move) untuk pergerakan.
-     */
     @SuppressLint("ClickableViewAccessibility")
     private fun setupListeners() {
         // Sprayer Button Toggle
         btnStartSprayer.setOnClickListener {
             isSpraying = !isSpraying
-            val json = JSONObject()
-            json.put("cmd", "spray")
-            json.put("state", isSpraying)
-            sendMessage(json.toString())
-            
+            sendRawCommand()
             updateSprayerButtonUI()
         }
 
@@ -104,11 +102,12 @@ class MainActivity : AppCompatActivity() {
                 val isDown = action == MotionEvent.ACTION_DOWN
                 
                 when (v.id) {
-                    R.id.btnMaju -> sendCommand("drive", if (isDown) 1 else 0)
-                    R.id.btnMundur -> sendCommand("drive", if (isDown) -1 else 0)
-                    R.id.btnKiri -> sendCommand("steer", if (isDown) -1 else 0)
-                    R.id.btnKanan -> sendCommand("steer", if (isDown) 1 else 0)
+                    R.id.btnMaju -> driveState = if (isDown) 1 else 0
+                    R.id.btnMundur -> driveState = if (isDown) -1 else 0
+                    R.id.btnKiri -> steerState = if (isDown) -1 else 0
+                    R.id.btnKanan -> steerState = if (isDown) 1 else 0
                 }
+                sendRawCommand()
             }
             false
         }
@@ -119,10 +118,6 @@ class MainActivity : AppCompatActivity() {
         btnKanan.setOnTouchListener(movementListener)
     }
 
-    /**
-     * Memperbarui antarmuka pengguna pada tombol Sprayer (Warna dan Ikon)
-     * berdasarkan status pompa saat ini.
-     */
     private fun updateSprayerButtonUI() {
         btnStartSprayer.text = if (isSpraying) "STOP SPRAYING" else "START SPRAYING"
         if (isSpraying) {
@@ -134,39 +129,26 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * Mengirim perintah pergerakan (Maju, Mundur, Kiri, Kanan, Stop) ke robot.
-     * @param cmd Kategori perintah (misal: "drive", "steer")
-     * @param value Nilai instruksi (1, -1, atau 0)
-     */
-    private fun sendCommand(cmd: String, value: Int) {
-        val json = JSONObject()
-        json.put("cmd", cmd)
-        json.put("val", value)
-        sendMessage(json.toString())
+    private fun sendRawCommand() {
+        val cmd = byteArrayOf(driveState.toByte(), steerState.toByte(), if (isSpraying) 1.toByte() else 0.toByte())
+        webSocket?.send(cmd.toByteString())
     }
 
-    /**
-     * Melakukan pemindaian jaringan lokal (Auto-Discovery) menggunakan UDP Broadcast.
-     * Aplikasi akan mencari ESP32 yang merespons dengan IP address-nya pada port 8888.
-     * Setelah IP ditemukan, fungsi ini akan otomatis memanggil `connectWebSocket()`.
-     */
     private fun discoverRobot() {
         runOnUiThread { tvSpeed.text = "..." }
         Thread {
             try {
-                val socket = java.net.DatagramSocket()
+                val socket = DatagramSocket()
                 socket.broadcast = true
-                socket.soTimeout = 1000 // 1 detik per kali baca
+                socket.soTimeout = 1000 
                 
                 val sendData = "FIND_SPRAYER_BOT".toByteArray()
                 var robotIp: String? = null
                 
-                // Cari ke semua broadcast address yang ada (Wifi / Hotspot)
-                val broadcastAddresses = mutableListOf<java.net.InetAddress>()
-                broadcastAddresses.add(java.net.InetAddress.getByName("255.255.255.255"))
+                val broadcastAddresses = mutableListOf<InetAddress>()
+                broadcastAddresses.add(InetAddress.getByName("255.255.255.255"))
                 
-                val interfaces = java.net.NetworkInterface.getNetworkInterfaces()
+                val interfaces = NetworkInterface.getNetworkInterfaces()
                 while (interfaces.hasMoreElements()) {
                     val networkInterface = interfaces.nextElement()
                     if (networkInterface.isLoopback || !networkInterface.isUp) continue
@@ -175,20 +157,18 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
                 
-                // Coba kirim dan tunggu selama 4 detik (4 kali percobaan)
                 for (i in 1..4) {
                     if (robotIp != null) break
                     
-                    // Kirim ke semua alamat broadcast
                     for (address in broadcastAddresses) {
                         try {
-                            val sendPacket = java.net.DatagramPacket(sendData, sendData.size, address, 8888)
+                            val sendPacket = DatagramPacket(sendData, sendData.size, address, 8888)
                             socket.send(sendPacket)
                         } catch (e: Exception) {}
                     }
                     
                     val receiveData = ByteArray(1024)
-                    val receivePacket = java.net.DatagramPacket(receiveData, receiveData.size)
+                    val receivePacket = DatagramPacket(receiveData, receiveData.size)
                     
                     try {
                         socket.receive(receivePacket)
@@ -198,7 +178,7 @@ class MainActivity : AppCompatActivity() {
                             Log.d("UDP", "Menemukan robot di IP: $robotIp")
                         }
                     } catch (e: java.net.SocketTimeoutException) {
-                        // Timeout 1 detik, coba kirim lagi
+                        // Timeout
                     }
                 }
                 
@@ -218,12 +198,6 @@ class MainActivity : AppCompatActivity() {
         }.start()
     }
 
-    /**
-     * Membuka koneksi WebSocket ke alamat IP ESP32 yang telah ditemukan.
-     * Fungsi ini akan terus menerima aliran data (telemetri) dari robot
-     * dan mengontrol UI Android secara real-time (Jarak, Baterai, Status, dll).
-     * @param ip Alamat IP lokal dari robot ESP32
-     */
     private fun connectWebSocket(ip: String) {
         val client = OkHttpClient.Builder()
             .readTimeout(3, TimeUnit.SECONDS)
@@ -237,27 +211,43 @@ class MainActivity : AppCompatActivity() {
                 runOnUiThread { tvSpeed.text = "0.0 m/s" }
             }
 
-            override fun onMessage(webSocket: WebSocket, text: String) {
+            override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
                 try {
-                    val json = JSONObject(text)
-                    val speed = if (json.has("speed")) json.getString("speed") else "0.0"
-                    val sprayState = if (json.has("isSpraying")) json.getBoolean("isSpraying") else false
-                    val duration = if (json.has("duration")) json.getString("duration") else "00:00:00"
-
-                    runOnUiThread {
-                        tvSpeed.text = "$speed m/s"
-                        tvPumpStatus.text = if (sprayState) "ON" else "OFF"
-                        tvDuration.text = duration
-                        
-                        // Sync toggle button if changed from backend
-                        if (sprayState != isSpraying) {
-                            isSpraying = sprayState
-                            updateSprayerButtonUI()
+                    val buffer = ByteBuffer.wrap(bytes.toByteArray()).order(ByteOrder.LITTLE_ENDIAN)
+                    if (buffer.capacity() >= 16) {
+                        val header = buffer.get().toUByte().toInt()
+                        if (header == 0xAA) {
+                            val distance = buffer.short
+                            val sprayState = buffer.get().toInt() == 1
+                            val speed = buffer.float
+                            val volume = buffer.float
+                            val durationSecs = buffer.int
+                            
+                            val h = durationSecs / 3600
+                            val m = (durationSecs % 3600) / 60
+                            val s = durationSecs % 60
+                            val durationStr = String.format("%02d:%02d:%02d", h, m, s)
+                            
+                            runOnUiThread {
+                                tvSpeed.text = String.format("%.1f m/s", speed).replace(',', '.')
+                                tvPumpStatus.text = if (sprayState) "ON" else "OFF"
+                                tvDuration.text = durationStr
+                                
+                                if (sprayState != isSpraying) {
+                                    isSpraying = sprayState
+                                    updateSprayerButtonUI()
+                                }
+                            }
                         }
                     }
                 } catch (e: Exception) {
-                    Log.e("WebSocket", "JSON parse error", e)
+                    Log.e("WebSocket", "Binary parse error", e)
                 }
+            }
+
+            // Fallback for debugging if ESP32 sends text
+            override fun onMessage(webSocket: WebSocket, text: String) {
+                Log.d("WebSocket", "Received text instead of binary. Please flash ESP32 with the new FreeRTOS code.")
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
@@ -267,10 +257,6 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         })
-    }
-
-    private fun sendMessage(msg: String) {
-        webSocket?.send(msg)
     }
 
     override fun onDestroy() {
