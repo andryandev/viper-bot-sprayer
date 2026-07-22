@@ -14,6 +14,10 @@ Repository ini berisi kode sumber (*source code*) aplikasi Android berdesain fut
 - Jaringan: **OkHttp** (WebSocket client)
 - Lingkungan Pengembangan: **Android Studio** (Gradle)
 
+> **Catatan Penting Jaringan & Keamanan:**
+> 1. **Cleartext Traffic (Android 9+):** Secara bawaan, Android versi modern (API 28+) memblokir jalur HTTP/WS lokal yang tidak dienkripsi. Aplikasi ini telah disuntikkan baris `android:usesCleartextTraffic="true"` di `AndroidManifest.xml` sehingga Anda dapat berkomunikasi dengan lancar dengan server lokal ESP32 via `ws://`.
+> 2. **Auto-Discovery & AP Isolation:** Fitur pencarian otomatis aplikasi (UDP Broadcast Port 8888) mungkin akan digagalkan oleh router kampus atau WiFi publik yang mengaktifkan *Client Isolation* (keamanan penangkal komunikasi antar gawai). Jika aplikasi gagal menemukan IP robot, sangat disarankan untuk menggunakan **Personal Hotspot HP** sebagai penghubung utamanya.
+
 ## 🚀 Cara Build & Instalasi
 ### Cara 1: Menggunakan Terminal (Cepat)
 1. Buka PowerShell di dalam folder yang sama dengan *file* README ini, lalu masuk ke direktori utama aplikasi:
