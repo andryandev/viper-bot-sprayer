@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <style name="Theme.SprayerBotApplication" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <!-- Primary brand color. -->
+        <item name="colorPrimary">@color/brand_blue</item>
+        <item name="colorSecondary">@color/teal_200</item>
+        <item name="android:statusBarColor">@color/bg_main</item>
+    </style>
+</resources>
